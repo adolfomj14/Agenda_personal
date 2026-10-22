@@ -6,7 +6,7 @@ import time as _time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,9 @@ TZ = ZoneInfo(os.environ.get("AGENDA_TZ", "America/Bogota"))
 API_KEY = os.environ.get("AGENDA_API_KEY")  # si no se define, modo desarrollo (abierto)
 
 
-def auth(x_api_key: str | None = Header(default=None)) -> None:
+def auth(request: Request, x_api_key: str | None = Header(default=None)) -> None:
+    if request.url.path in ("/health", "/ping"):
+        return
     if API_KEY and x_api_key != API_KEY:
         raise HTTPException(401, "API key inválida")
 

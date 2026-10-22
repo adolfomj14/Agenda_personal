@@ -10,7 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Llamar a /ping (consulta la base de datos)
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          API_KEY: ${{ secrets.AGENDA_API_KEY }}
         run: |
+          URL="${BACKEND_URL:-https://agenda-personal-api.onrender.com}"
+          URL="${URL%/}"
           curl --fail --retry 5 --retry-delay 20 --max-time 90 \
-            -H "X-API-Key: ${{ secrets.AGENDA_API_KEY }}" \
-            "${{ secrets.BACKEND_URL }}/ping"
+            -H "X-API-Key: $API_KEY" \
+            "$URL/ping"
