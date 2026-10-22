@@ -1,0 +1,16 @@
+name: Mantener activo (Supabase + servidor)
+
+on:
+  schedule:
+    - cron: "0 12 * * *"   # diario; evita que Supabase pause el proyecto por inactividad (7 días)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar a /ping (consulta la base de datos)
+        run: |
+          curl --fail --retry 5 --retry-delay 20 --max-time 90 \
+            -H "X-API-Key: ${{ secrets.AGENDA_API_KEY }}" \
+            "${{ secrets.BACKEND_URL }}/ping"

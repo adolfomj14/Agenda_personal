@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: agenda-personal-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: AGENDA_API_KEY
+        generateValue: true
+      - key: AGENDA_TZ
+        value: America/Bogota
+      - key: PYTHON_VERSION
+        value: 3.12.1
+      # ▼ AQUÍ VA LA CONEXIÓN DE SUPABASE: pégala en el panel de Render (Environment) al desplegar.
+      - key: DATABASE_URL
+        sync: false
