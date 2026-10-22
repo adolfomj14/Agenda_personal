@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS notes(
   body TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
   task_id INTEGER,
+  canvas TEXT NOT NULL DEFAULT '[]',        -- JSON: elementos de la nota (texto, código, imagen, dibujo...)
+  color TEXT NOT NULL DEFAULT '#FFF59D',
+  pinned INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -117,3 +120,10 @@ def init() -> None:
         return  # en Supabase el esquema se crea una vez con supabase/schema.sql
     with connect() as c:
         c.executescript(SCHEMA)
+        # Migración para bases SQLite creadas con la versión anterior
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(notes)")}
+        for name, ddl in (("canvas", "TEXT NOT NULL DEFAULT '[]'"),
+                          ("color", "TEXT NOT NULL DEFAULT '#FFF59D'"),
+                          ("pinned", "INTEGER NOT NULL DEFAULT 0")):
+            if name not in cols:
+                c.execute(f"ALTER TABLE notes ADD COLUMN {name} {ddl}")

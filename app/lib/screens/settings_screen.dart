@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../api.dart';
+import '../theme.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.api, required this.onSaved});
@@ -29,6 +30,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(title: const Text('Ajustes')),
         body: ListView(padding: const EdgeInsets.all(16), children: [
+          const Row(children: [
+            AppLogo(size: 56),
+            SizedBox(width: 14),
+            Expanded(child: Text('Agenda personal\nUniversidad + Trabajo en un solo lugar', style: TextStyle(fontSize: 15))),
+          ]),
+          const SizedBox(height: 20),
           Text('Servidor', style: Theme.of(context).textTheme.titleMedium),
           TextField(controller: _url, decoration: const InputDecoration(labelText: 'URL del servidor')),
           TextField(controller: _key, obscureText: true, decoration: const InputDecoration(labelText: 'API key')),

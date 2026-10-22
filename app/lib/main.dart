@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'api.dart';
-import 'screens/today_screen.dart';
+import 'theme.dart';
+import 'screens/calendar_screen.dart';
 import 'screens/tasks_screen.dart';
 import 'screens/notes_screen.dart';
 import 'screens/settings_screen.dart';
@@ -18,8 +19,8 @@ class AgendaApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
         title: 'Agenda personal',
         debugShowCheckedModeBanner: false,
-        theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-        darkTheme: ThemeData(colorSchemeSeed: Colors.indigo, brightness: Brightness.dark, useMaterial3: true),
+        theme: buildTheme(Brightness.light),
+        darkTheme: buildTheme(Brightness.dark),
         home: const Home(),
       );
 }
@@ -54,14 +55,14 @@ class _HomeState extends State<Home> {
     final api = _api;
     if (api == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     final pages = [
-      TodayScreen(key: ValueKey('t$_reload'), api: api),
+      CalendarScreen(key: ValueKey('t$_reload'), api: api),
       TasksScreen(key: ValueKey('k$_reload'), api: api),
       NotesScreen(key: ValueKey('n$_reload'), api: api),
       SettingsScreen(api: api, onSaved: _loadApi),
     ];
     final wide = MediaQuery.of(context).size.width >= 700; // PC: barra lateral
     const dests = [
-      (Icons.today, 'Hoy'),
+      (Icons.calendar_month, 'Calendario'),
       (Icons.checklist, 'Tareas'),
       (Icons.sticky_note_2_outlined, 'Notas'),
       (Icons.settings, 'Ajustes'),

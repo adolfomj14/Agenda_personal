@@ -35,6 +35,9 @@ create table if not exists public.notes (
   body       text not null default '',
   tags       text not null default '',
   task_id    bigint references public.tasks(id) on delete set null,
+  canvas     text not null default '[]',        -- JSON: elementos de la nota
+  color      text not null default '#FFF59D',
+  pinned     integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

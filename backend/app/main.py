@@ -65,9 +65,12 @@ class LogIn(BaseModel):
 
 class NoteIn(BaseModel):
     title: str = ""
-    body: str = ""
+    body: str = ""            # texto plano de respaldo/búsqueda
     tags: str = ""
     task_id: int | None = None
+    canvas: str = "[]"        # JSON con los elementos del lienzo
+    color: str = "#FFF59D"
+    pinned: int = Field(0, ge=0, le=1)
 
 
 def _check_ctx(ctx: str) -> None:
@@ -155,9 +158,9 @@ def _conflicts(events: list[tuple[CalEvent, str]]) -> list[dict]:
 
 
 @app.get("/events")
-def events(days: int = 14):
+def events(days: int = 14, back: int = 0):
     now = datetime.now(TZ)
-    evs = _load_events(now - timedelta(hours=12), now + timedelta(days=days))
+    evs = _load_events(now - timedelta(days=back, hours=12), now + timedelta(days=days))
     return {"events": [_ev_json(e, c) for e, c in evs], "conflicts": _conflicts(evs)}
 
 
@@ -290,30 +293,43 @@ def stats():
 @app.post("/notes", status_code=201)
 def add_note(n: NoteIn):
     with db.connect() as conn:
-        cur = conn.execute("INSERT INTO notes(title,body,tags,task_id) VALUES(?,?,?,?)",
-                           (n.title, n.body, n.tags, n.task_id))
+        cur = conn.execute("INSERT INTO notes(title,body,tags,task_id,canvas,color,pinned) VALUES(?,?,?,?,?,?,?)",
+                           (n.title, n.body, n.tags, n.task_id, n.canvas, n.color, n.pinned))
         return dict(conn.execute("SELECT * FROM notes WHERE id=?", (cur.lastrowid,)).fetchone())
 
 
 @app.get("/notes")
 def list_notes(q: str | None = None, tag: str | None = None):
-    sql, args = "SELECT * FROM notes WHERE 1=1", []
+    """Lista ligera: no incluye el lienzo completo (puede pesar por las imágenes). Usa GET /notes/{id}."""
+    sql, args = ("SELECT id,title,body,tags,task_id,color,pinned,created_at,updated_at,"
+                 "LENGTH(canvas) AS canvas_size FROM notes WHERE 1=1"), []
     if q:
-        sql += " AND (title LIKE ? OR body LIKE ?)"
-        args += [f"%{q}%", f"%{q}%"]
+        sql += " AND (title LIKE ? OR body LIKE ? OR canvas LIKE ?)"
+        args += [f"%{q}%", f"%{q}%", f"%{q}%"]
     if tag:
         sql += " AND (',' || tags || ',') LIKE ?"
         args.append(f"%,{tag},%")
     with db.connect() as conn:
-        return [dict(r) for r in conn.execute(sql + " ORDER BY updated_at DESC", args)]
+        rows = [dict(r) for r in conn.execute(sql + " ORDER BY pinned DESC, updated_at DESC", args)]
+    return rows
+
+
+@app.get("/notes/{nid}")
+def get_note(nid: int):
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Nota no existe")
+    return dict(row)
 
 
 @app.put("/notes/{nid}")
 def update_note(nid: int, n: NoteIn):
     with db.connect() as conn:
         cur = conn.execute(
-            "UPDATE notes SET title=?,body=?,tags=?,task_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (n.title, n.body, n.tags, n.task_id, nid))
+            "UPDATE notes SET title=?,body=?,tags=?,task_id=?,canvas=?,color=?,pinned=?,"
+            "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (n.title, n.body, n.tags, n.task_id, n.canvas, n.color, n.pinned, nid))
         if cur.rowcount == 0:
             raise HTTPException(404, "Nota no existe")
         return dict(conn.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone())

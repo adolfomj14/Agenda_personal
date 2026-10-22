@@ -1,7 +1,7 @@
 name: agenda_personal
 description: Agenda personal - Universidad + Trabajo
 publish_to: none
-version: 0.1.0
+version: 0.2.0
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -12,11 +12,19 @@ dependencies:
   http: ^1.2.0
   shared_preferences: ^2.2.0
   intl: ^0.19.0
+  table_calendar: ^3.1.2
+  url_launcher: ^6.3.0
+  file_picker: ^8.1.0
+  image: ^4.2.0
+  flutter_highlight: ^0.7.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icon/icon.png

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../api.dart';
-import 'today_screen.dart' show statusColors, statusLabels;
+import '../theme.dart' show statusColors, statusLabels;
 
 class TasksScreen extends StatefulWidget {
   const TasksScreen({super.key, required this.api});
