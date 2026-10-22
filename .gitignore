@@ -2,3 +2,6 @@
 __pycache__/
 *.db
 .env
+.dart_tool/
+build/
+*.err

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -226,7 +225,7 @@ class _NoteEditorState extends State<NoteEditor> {
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         final ok = _dirty ? await _save(silent: true) : true;
-        if (!mounted) return;
+        if (!context.mounted) return;
         if (ok || _failedOnce) {
           Navigator.pop(context, true);
         } else {
@@ -404,10 +403,12 @@ class _NoteEditorState extends State<NoteEditor> {
                 onPressed: () {
                   final e = _els.firstWhere((x) => x.id == _drawing);
                   final s = e.data['strokes'] as List;
-                  if (s.isNotEmpty) setState(() {
-                    s.removeLast();
-                    _touch();
-                  });
+                  if (s.isNotEmpty) {
+                    setState(() {
+                      s.removeLast();
+                      _touch();
+                    });
+                  }
                 },
               ),
               IconButton(

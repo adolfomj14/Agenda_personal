@@ -214,7 +214,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final items = _itemsOf(_selected);
     final deadlines = items.where((i) => i.kind == _Kind.deadline).toList();
     final timed = items.where((i) => i.kind != _Kind.deadline).toList();
-    final title = toBeginningOfSentenceCase(DateFormat("EEEE d 'de' MMMM", 'es').format(_selected))!;
+    final title = toBeginningOfSentenceCase(DateFormat("EEEE d 'de' MMMM", 'es').format(_selected));
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(

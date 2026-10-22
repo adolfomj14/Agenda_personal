@@ -116,7 +116,7 @@ class _TasksScreenState extends State<TasksScreen> {
               for (final c in cals.where((c) => c['context'] == 'universidad')) {
                 n += (await widget.api.post('/calendars/${c['id']}/import-tasks'))['imported'] as int;
               }
-              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$n tareas importadas')));
+              if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$n tareas importadas')));
               _refresh();
             },
           ),
