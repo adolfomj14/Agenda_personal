@@ -1,22 +1,40 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../api.dart';
 import '../theme.dart';
+import 'weekly_schedule_sheet.dart';
 
 enum _Kind { event, block, deadline }
 
 class _Item {
-  _Item(this.kind, this.title, this.start, this.end, this.ctx, [this.sub = '']);
+  _Item(
+    this.kind,
+    this.title,
+    this.start,
+    this.end,
+    this.ctx, {
+    this.sub = '',
+    this.description = '',
+    this.location = '',
+    this.url = '',
+    this.done = false,
+  });
   final _Kind kind;
   final String title;
   final DateTime start;
   final DateTime end;
   final String ctx;
   final String sub;
+  final String description;
+  final String location;
+  final String url;
+  final bool done;
 }
 
 class _Placed {
@@ -36,57 +54,327 @@ class CalendarScreen extends StatefulWidget {
 }
 
 class _CalendarScreenState extends State<CalendarScreen> {
-  late Future<void> _f = _load();
   final _byDay = <DateTime, List<_Item>>{};
   List<dynamic> _conflicts = [];
   int _atRisk = 0;
+  bool _loading = true;
+  String? _error;
   DateTime _focused = DateTime.now();
   DateTime _selected = _day(DateTime.now());
   CalendarFormat _format = CalendarFormat.month;
 
-  Future<void> _load() async {
-    final ev = await widget.api.get('/events?days=120&back=45') as Map;
-    final plan = await widget.api.get('/plan?days=30') as Map;
-    final tasks = await widget.api.get('/tasks') as List;
+  @override
+  void initState() {
+    super.initState();
+    _initLoad();
+  }
+
+  void _initLoad() {
+    final cached = widget.api.peekCache('bundle');
+    if (cached is Map) {
+      _applyBundle(Map<String, dynamic>.from(cached));
+      _loading = false;
+    }
+    _reload(silent: !_loading);
+  }
+
+  void _applyBundle(Map<String, dynamic> bundle) {
     _byDay.clear();
     void add(DateTime d, _Item i) => _byDay.putIfAbsent(_day(d), () => []).add(i);
 
-    for (final e in ev['events'] as List) {
-      final s = DateTime.parse(e['start']).toLocal();
-      final en = DateTime.parse(e['end']).toLocal();
+    final events = (bundle['events'] as List?) ?? const [];
+    final plan = (bundle['plan'] as Map?) ?? const {};
+    final tasks = (bundle['tasks'] as List?) ?? const [];
+
+    for (final e in events) {
+      final s = DateTime.parse(e['start'].toString()).toLocal();
+      final en = DateTime.parse(e['end'].toString()).toLocal();
       final ctx = (e['context'] ?? 'personal').toString();
       final title = e['title'].toString();
       final cal = e['calendar'].toString();
+      final desc = (e['description'] ?? '').toString();
+      final loc = (e['location'] ?? '').toString();
+      final url = (e['url'] ?? '').toString();
       final allDay = e['all_day'] == true;
       if (allDay) {
-        // Fin exclusivo: abarca cada día completo
         var d = _day(s);
         final last = _day(en.subtract(const Duration(seconds: 1)));
         do {
-          add(d, _Item(_Kind.deadline, title, d, d, ctx, cal));
+          add(d, _Item(_Kind.deadline, title, d, d, ctx, sub: cal, description: desc, location: loc, url: url));
           d = d.add(const Duration(days: 1));
         } while (!d.isAfter(last));
       } else if (!en.isAfter(s)) {
-        add(s, _Item(_Kind.deadline, title, s, s, ctx, cal)); // entrega puntual (Canvas)
+        add(s, _Item(_Kind.deadline, title, s, s, ctx, sub: cal, description: desc, location: loc, url: url));
       } else {
-        add(s, _Item(_Kind.event, title, s, en, ctx, cal));
+        add(s, _Item(_Kind.event, title, s, en, ctx, sub: cal, description: desc, location: loc, url: url));
       }
     }
-    for (final b in plan['blocks'] as List) {
-      final s = DateTime.parse(b['start']).toLocal();
-      add(s, _Item(_Kind.block, b['title'].toString(), s, DateTime.parse(b['end']).toLocal(), 'plan', 'Plan sugerido'));
+    for (final b in (plan['blocks'] as List?) ?? const []) {
+      final s = DateTime.parse(b['start'].toString()).toLocal();
+      add(
+        s,
+        _Item(
+          _Kind.block,
+          b['title'].toString(),
+          s,
+          DateTime.parse(b['end'].toString()).toLocal(),
+          'plan',
+          sub: 'Bloque sugerido por el planificador',
+          description: 'Bloque de tiempo reservado automáticamente para avanzar en esta tarea.',
+        ),
+      );
     }
     for (final t in tasks) {
-      final d = DateTime.parse(t['deadline']).toLocal();
-      add(d, _Item(_Kind.deadline, '📌 ${t['title']}', d, d, (t['context'] ?? 'personal').toString(), 'Tarea'));
+      final d = DateTime.parse(t['deadline'].toString()).toLocal();
+      final isDone = t['done'] == true;
+      add(
+        d,
+        _Item(
+          _Kind.deadline,
+          '${isDone ? '✅' : '📌'} ${t['title']}',
+          d,
+          d,
+          (t['context'] ?? 'personal').toString(),
+          sub: isDone ? 'Tarea completada' : 'Entrega de tarea (${t['logged_min'] ?? 0}/${t['estimate_min']} min)',
+          description: (t['description'] ?? '').toString(),
+          done: isDone,
+        ),
+      );
     }
-    _conflicts = ev['conflicts'] as List;
-    _atRisk = (plan['statuses'] as List).where((x) => x['status'] == 'late' || x['status'] == 'at_risk').length;
+    _conflicts = (bundle['conflicts'] as List?) ?? const [];
+    _atRisk = ((plan['statuses'] as List?) ?? const [])
+        .where((x) => x['status'] == 'late' || x['status'] == 'at_risk')
+        .length;
   }
 
-  void _reload() => setState(() => _f = _load());
+  Future<void> _reload({bool silent = false, bool forceIcs = false}) async {
+    if (!silent && mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final bundle = await widget.api.getBundle(days: 120, back: 45, refresh: forceIcs);
+      if (!mounted) return;
+      setState(() {
+        _applyBundle(bundle);
+        _loading = false;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        if (_byDay.isEmpty) _error = '$e';
+      });
+    }
+  }
 
   List<_Item> _itemsOf(DateTime d) => _byDay[_day(d)] ?? const [];
+
+  // ---------- Ventana de detalles con texto seleccionable y copiado ----------
+  Future<void> _showItemDetails(_Item item) async {
+    final dateFmt = DateFormat("EEEE d 'de' MMMM yyyy", 'es');
+    final hmFmt = DateFormat.Hm();
+    final isTimed = item.kind != _Kind.deadline;
+    final durMin = isTimed ? item.end.difference(item.start).inMinutes : 0;
+    final timeStr = isTimed
+        ? '${hmFmt.format(item.start)} – ${hmFmt.format(item.end)} ($durMin min)'
+        : (item.start.hour == 0 && item.start.minute == 0
+            ? 'Todo el día'
+            : 'Hora límite: ${hmFmt.format(item.start)}');
+    final isBusy = {'busy', 'ocupado', 'no disponible', 'unavailable'}
+        .contains(item.title.trim().toLowerCase());
+
+    final fullSummary = [
+      item.title,
+      'Fecha: ${dateFmt.format(item.start)}',
+      'Horario: $timeStr',
+      if (item.sub.isNotEmpty) 'Origen: ${item.sub}',
+      'Contexto: ${item.ctx}',
+      if (item.location.isNotEmpty) 'Ubicación: ${item.location}',
+      if (item.description.isNotEmpty) '\nDescripción:\n${item.description}',
+      if (item.url.isNotEmpty) '\nEnlace: ${item.url}',
+    ].join('\n');
+
+    await showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: SelectionArea(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                item.kind == _Kind.block
+                    ? Icons.timer_outlined
+                    : item.kind == _Kind.deadline
+                        ? Icons.flag_outlined
+                        : Icons.event_outlined,
+                color: item.kind == _Kind.block ? brandMint : contextColor(item.ctx),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  item.title,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+        ),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: SelectionArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _detailRow(Icons.calendar_today_outlined, 'Fecha', dateFmt.format(item.start)),
+                  _detailRow(Icons.access_time, 'Horario', timeStr),
+                  if (item.sub.isNotEmpty) _detailRow(Icons.source_outlined, 'Calendario / Origen', item.sub),
+                  _detailRow(Icons.category_outlined, 'Contexto', item.ctx.toUpperCase()),
+                  if (item.location.isNotEmpty) _detailRow(Icons.place_outlined, 'Ubicación', item.location),
+                  if (item.description.isNotEmpty) ...[
+                    const Divider(height: 20),
+                    Text('Información / Descripción (seleccionable):',
+                        style: Theme.of(c).textTheme.labelLarge),
+                    const SizedBox(height: 6),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(c).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: SelectableText(
+                        item.description,
+                        style: const TextStyle(fontSize: 13.5, height: 1.4),
+                      ),
+                    ),
+                  ],
+                  if (item.url.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    InkWell(
+                      onTap: () async {
+                        final u = Uri.tryParse(item.url);
+                        if (u != null) await launchUrl(u, mode: LaunchMode.externalApplication);
+                      },
+                      child: Text(
+                        item.url,
+                        style: const TextStyle(
+                          color: Colors.blue,
+                          decoration: TextDecoration.underline,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (isBusy) ...[
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.amber.shade700.withOpacity(0.4)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '¿Por qué aparece solo como "Busy / Ocupado"?',
+                            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Google Workspace en cuentas corporativas oculta los títulos en el enlace público iCal. '
+                            'Puedes usar la "Dirección secreta en formato iCal" de Google Calendar o configurar tu Horario Semanal de Trabajo aquí mismo.',
+                            style: TextStyle(fontSize: 12.5),
+                          ),
+                          const SizedBox(height: 8),
+                          FilledButton.tonalIcon(
+                            onPressed: () async {
+                              Navigator.pop(c);
+                              final changed = await showWeeklyScheduleModal(context, widget.api);
+                              if (changed == true) _reload();
+                            },
+                            icon: const Icon(Icons.work_history_outlined, size: 18),
+                            label: const Text('Configurar mi horario de trabajo'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: fullSummary));
+              if (c.mounted) {
+                ScaffoldMessenger.of(c).showSnackBar(
+                  const SnackBar(content: Text('Información copiada al portapapeles'), duration: Duration(seconds: 2)),
+                );
+              }
+            },
+            icon: const Icon(Icons.copy, size: 18),
+            label: const Text('Copiar info'),
+          ),
+          if (item.kind != _Kind.block)
+            OutlinedButton.icon(
+              onPressed: () async {
+                Navigator.pop(c);
+                await widget.api.post('/tasks', {
+                  'title': item.title.replaceFirst(RegExp(r'^[📌✅]\s*'), ''),
+                  'context': item.ctx == 'plan' ? 'personal' : item.ctx,
+                  'estimate_min': durMin > 0 ? durMin : 60,
+                  'priority': 2,
+                  'deadline': item.start.toIso8601String(),
+                  'description': item.description,
+                });
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Tarea creada a partir del evento')),
+                  );
+                }
+                _reload(silent: true);
+              },
+              icon: const Icon(Icons.add_task, size: 18),
+              label: const Text('Crear tarea'),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 130,
+            child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          ),
+          Expanded(
+            child: Text(value, style: const TextStyle(fontSize: 13.5)),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -95,6 +383,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
         titleSpacing: 12,
         title: const Row(children: [AppLogo(size: 30), SizedBox(width: 10), Text('Calendario')]),
         actions: [
+          TextButton.icon(
+            onPressed: () async {
+              final changed = await showWeeklyScheduleModal(context, widget.api);
+              if (changed == true) _reload();
+            },
+            icon: const Icon(Icons.work_history_outlined, size: 20),
+            label: const Text('Mi horario'),
+          ),
           IconButton(
             tooltip: 'Ir a hoy',
             icon: const Icon(Icons.today),
@@ -103,40 +399,42 @@ class _CalendarScreenState extends State<CalendarScreen> {
               _selected = _day(DateTime.now());
             }),
           ),
-          IconButton(tooltip: 'Actualizar', icon: const Icon(Icons.refresh), onPressed: _reload),
+          IconButton(
+            tooltip: 'Actualizar calendarios',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _reload(forceIcs: true),
+          ),
         ],
       ),
-      body: FutureBuilder<void>(
-        future: _f,
-        builder: (c, s) {
-          if (s.connectionState != ConnectionState.done) return const Center(child: CircularProgressIndicator());
-          if (s.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text('${s.error}', textAlign: TextAlign.center),
-                  const SizedBox(height: 12),
-                  FilledButton(onPressed: _reload, child: const Text('Reintentar')),
-                ]),
-              ),
-            );
-          }
-          return LayoutBuilder(builder: (c, box) {
-            final wide = box.maxWidth >= 900;
-            final cal = _calendar(context);
-            final day = _dayPanel(context);
-            if (wide) {
-              return Row(children: [
-                SizedBox(width: 440, child: SingleChildScrollView(child: Column(children: [cal, _banners()]))),
-                const VerticalDivider(width: 1),
-                Expanded(child: day),
-              ]);
-            }
-            return Column(children: [cal, _banners(), Expanded(child: day)]);
-          });
-        },
-      ),
+      body: _loading && _byDay.isEmpty
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null && _byDay.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text('$_error', textAlign: TextAlign.center),
+                      const SizedBox(height: 12),
+                      FilledButton(onPressed: _reload, child: const Text('Reintentar')),
+                    ]),
+                  ),
+                )
+              : LayoutBuilder(builder: (c, box) {
+                  final wide = box.maxWidth >= 900;
+                  final cal = _calendar(context);
+                  final day = _dayPanel(context);
+                  if (wide) {
+                    return Row(children: [
+                      SizedBox(
+                        width: 440,
+                        child: SingleChildScrollView(child: Column(children: [cal, _banners()])),
+                      ),
+                      const VerticalDivider(width: 1),
+                      Expanded(child: day),
+                    ]);
+                  }
+                  return Column(children: [cal, _banners(), Expanded(child: day)]);
+                }),
     );
   }
 
@@ -200,7 +498,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
               bottom: 4,
               child: Row(children: [
                 for (final col in ctxs)
-                  Container(margin: const EdgeInsets.symmetric(horizontal: 1.2), width: 6, height: 6, decoration: BoxDecoration(color: col, shape: BoxShape.circle)),
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 1.2),
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(color: col, shape: BoxShape.circle),
+                  ),
               ]),
             );
           },
@@ -216,35 +519,47 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final timed = items.where((i) => i.kind != _Kind.deadline).toList();
     final title = toBeginningOfSentenceCase(DateFormat("EEEE d 'de' MMMM", 'es').format(_selected));
 
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-        child: Row(children: [
-          Expanded(child: Text(title, style: Theme.of(context).textTheme.titleLarge)),
-          _legend('Universidad', contextColor('universidad')),
-          _legend('Trabajo', contextColor('trabajo')),
-          _legend('Plan', brandMint),
-        ]),
-      ),
-      if (deadlines.isNotEmpty)
+    return SelectionArea(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Wrap(spacing: 6, runSpacing: 2, children: [
-            for (final d in deadlines)
-              Chip(
-                avatar: Icon(Icons.flag, size: 16, color: contextColor(d.ctx)),
-                label: Text(
-                  d.start.hour == 0 && d.start.minute == 0 ? d.title : '${DateFormat.Hm().format(d.start)}  ${d.title}',
-                  overflow: TextOverflow.ellipsis,
-                ),
-                backgroundColor: contextColor(d.ctx).withOpacity(0.10),
-                side: BorderSide(color: contextColor(d.ctx).withOpacity(0.4)),
-                visualDensity: VisualDensity.compact,
-              ),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Row(children: [
+            Expanded(child: Text(title, style: Theme.of(context).textTheme.titleLarge)),
+            _legend('Universidad', contextColor('universidad')),
+            _legend('Trabajo', contextColor('trabajo')),
+            _legend('Plan', brandMint),
           ]),
         ),
-      Expanded(child: _timeline(timed)),
-    ]);
+        if (deadlines.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Wrap(spacing: 6, runSpacing: 4, children: [
+              for (final d in deadlines)
+                ActionChip(
+                  avatar: Icon(
+                    d.done ? Icons.check_circle : Icons.flag,
+                    size: 16,
+                    color: d.done ? Colors.green : contextColor(d.ctx),
+                  ),
+                  label: Text(
+                    d.start.hour == 0 && d.start.minute == 0
+                        ? d.title
+                        : '${DateFormat.Hm().format(d.start)}  ${d.title}',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      decoration: d.done ? TextDecoration.lineThrough : null,
+                    ),
+                  ),
+                  backgroundColor: contextColor(d.ctx).withOpacity(0.10),
+                  side: BorderSide(color: contextColor(d.ctx).withOpacity(0.4)),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _showItemDetails(d),
+                ),
+            ]),
+          ),
+        Expanded(child: _timeline(timed)),
+      ]),
+    );
   }
 
   Widget _legend(String t, Color c) => Padding(
@@ -292,9 +607,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     width: left - 6,
                     child: Transform.translate(
                       offset: const Offset(0, -7),
-                      child: Text('${h.toString().padLeft(2, '0')}:00',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.outline)),
+                      child: Text(
+                        '${h.toString().padLeft(2, '0')}:00',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.outline),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -318,7 +635,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 left: left,
                 right: 0,
                 child: Center(
-                  child: Text('Sin eventos ni bloques este día', style: TextStyle(color: Theme.of(context).colorScheme.outline)),
+                  child: Text(
+                    'Sin eventos ni bloques este día.\nPulsa "Mi horario" arriba si quieres añadir tu jornada laboral o clases fijas.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Theme.of(context).colorScheme.outline),
+                  ),
                 ),
               ),
           ]),
@@ -330,7 +651,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   Widget _block(_Placed p, int firstHour, double left, double width, DateTime dayStart, DateTime dayEnd) {
     final i = p.item;
     final s = i.start.isBefore(dayStart) ? dayStart : i.start;
-    var e = i.end.isAfter(dayEnd) ? dayEnd : i.end;
+    final e = i.end.isAfter(dayEnd) ? dayEnd : i.end;
     final minutes = math.max(30, e.difference(s).inMinutes);
     final top = ((s.hour - firstHour) * 60 + s.minute) / 60 * _hourH;
     final height = minutes / 60 * _hourH - 2;
@@ -342,29 +663,46 @@ class _CalendarScreenState extends State<CalendarScreen> {
       left: left + colW * p.col,
       width: colW - 3,
       height: height,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withOpacity(isBlock ? 0.18 : 0.88),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
           borderRadius: BorderRadius.circular(8),
-          border: Border(left: BorderSide(color: color, width: 4)),
-        ),
-        clipBehavior: Clip.hardEdge,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(
-            '${isBlock ? '⏱ ' : ''}${i.title}',
-            maxLines: height > 48 ? 2 : 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5, color: isBlock ? Theme.of(context).colorScheme.onSurface : Colors.white),
-          ),
-          if (height > 40)
-            Text(
-              '${DateFormat.Hm().format(i.start)} – ${DateFormat.Hm().format(i.end)}${i.sub.isEmpty ? '' : ' · ${i.sub}'}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11, color: isBlock ? Theme.of(context).colorScheme.onSurfaceVariant : Colors.white70),
+          onTap: () => _showItemDetails(i),
+          child: Tooltip(
+            message: 'Pulsa para ver y copiar información completa',
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: color.withOpacity(isBlock ? 0.18 : 0.88),
+                borderRadius: BorderRadius.circular(8),
+                border: Border(left: BorderSide(color: color, width: 4)),
+              ),
+              clipBehavior: Clip.hardEdge,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(
+                  '${isBlock ? '⏱ ' : ''}${i.title}',
+                  maxLines: height > 48 ? 2 : 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12.5,
+                    color: isBlock ? Theme.of(context).colorScheme.onSurface : Colors.white,
+                  ),
+                ),
+                if (height > 40)
+                  Text(
+                    '${DateFormat.Hm().format(i.start)} – ${DateFormat.Hm().format(i.end)}${i.sub.isEmpty ? '' : ' · ${i.sub}'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isBlock ? Theme.of(context).colorScheme.onSurfaceVariant : Colors.white70,
+                    ),
+                  ),
+              ]),
             ),
-        ]),
+          ),
+        ),
       ),
     );
   }

@@ -9,6 +9,8 @@ import httpx
 import icalendar
 import recurring_ical_events
 
+_http = httpx.Client(timeout=18, follow_redirects=True)
+
 
 @dataclass
 class CalEvent:
@@ -19,12 +21,16 @@ class CalEvent:
     all_day: bool
     source: str
     url: str = ""
+    description: str = ""
+    location: str = ""
 
 
 def _to_dt(value, tz: ZoneInfo) -> tuple[datetime, bool]:
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=tz)
+        else:
+            value = value.astimezone(tz)
         return value, False
     if isinstance(value, date):
         return datetime.combine(value, time.min, tz), True
@@ -38,6 +44,8 @@ def parse_ics(data: bytes | str, source: str, start: datetime, end: datetime, tz
         dt_start, all_day = _to_dt(comp.get("DTSTART").dt, tz)
         if comp.get("DTEND") is not None:
             dt_end, _ = _to_dt(comp.get("DTEND").dt, tz)
+        elif comp.get("DURATION") is not None:
+            dt_end = dt_start + comp.get("DURATION").dt
         else:
             # Canvas publica entregas sin DTEND: se asume punto en el tiempo.
             dt_end = dt_start + (timedelta(days=1) if all_day else timedelta(minutes=0))
@@ -50,6 +58,8 @@ def parse_ics(data: bytes | str, source: str, start: datetime, end: datetime, tz
                 all_day=all_day,
                 source=source,
                 url=str(comp.get("URL", "")),
+                description=str(comp.get("DESCRIPTION", "")).strip(),
+                location=str(comp.get("LOCATION", "")).strip(),
             )
         )
     events.sort(key=lambda e: e.start)
@@ -59,6 +69,6 @@ def parse_ics(data: bytes | str, source: str, start: datetime, end: datetime, tz
 def fetch_ics(url: str) -> bytes:
     # Google/Canvas a veces entregan webcal://
     url = url.replace("webcal://", "https://", 1)
-    r = httpx.get(url, timeout=20, follow_redirects=True)
+    r = _http.get(url)
     r.raise_for_status()
     return r.content
