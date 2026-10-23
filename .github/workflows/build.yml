@@ -24,7 +24,9 @@ jobs:
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable, cache: true }
       - name: Generar carpetas de plataforma
         working-directory: app
-        run: flutter create . --platforms=android --org com.agenda --project-name agenda_personal
+        run: |
+          flutter create . --platforms=android --org com.agenda --project-name agenda_personal
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <application|' android/app/src/main/AndroidManifest.xml
       - name: Compilar APK
         working-directory: app
         run: |
