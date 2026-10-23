@@ -2,17 +2,22 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'http_client_stub.dart' if (dart.library.io) 'http_client_io.dart';
+
 class Api {
   Api(this.baseUrl, this.key);
   final String baseUrl;
   final String key;
 
-  static final http.Client _client = http.Client();
+  static const String appVersion = 'v0.2.1';
+  static final http.Client _client = createResilientHttpClient();
   static final Map<String, dynamic> _memCache = {};
 
   static Future<Api> load() async {
     final p = await SharedPreferences.getInstance();
-    return Api(p.getString('url') ?? 'http://127.0.0.1:8000', p.getString('key') ?? '');
+    final savedUrl = p.getString('url')?.trim();
+    final url = (savedUrl == null || savedUrl.isEmpty) ? 'https://agenda-personal-api.onrender.com' : savedUrl;
+    return Api(url, p.getString('key') ?? '');
   }
 
   static Future<void> save(String url, String key) async {

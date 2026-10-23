@@ -26,7 +26,19 @@ jobs:
         working-directory: app
         run: |
           flutter create . --platforms=android --org com.agenda --project-name agenda_personal
-          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <application|' android/app/src/main/AndroidManifest.xml
+          python3 - << 'EOF'
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p).read()
+          perms = (
+              '    <uses-permission android:name="android.permission.INTERNET"/>\n'
+              '    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n'
+              '    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>\n'
+          )
+          s = s.replace("<application", perms + '    <application\n        android:usesCleartextTraffic="true"', 1)
+          s = s.replace('android:label="agenda_personal"', 'android:label="Agenda Personal"')
+          open(p, "w").write(s)
+          print(open(p).read())
+          EOF
       - name: Compilar APK
         working-directory: app
         run: |

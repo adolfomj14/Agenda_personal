@@ -39,7 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               SizedBox(width: 14),
               Expanded(
                 child: Text(
-                  'Agenda personal\nUniversidad + Trabajo en un solo lugar',
+                  'Agenda personal (${Api.appVersion})\nUniversidad + Trabajo en un solo lugar',
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                 ),
               ),

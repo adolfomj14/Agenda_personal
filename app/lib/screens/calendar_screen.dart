@@ -413,7 +413,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      Text('$_error', textAlign: TextAlign.center),
+                      Text('$_error\n\nVersión: ${Api.appVersion}', textAlign: TextAlign.center),
                       const SizedBox(height: 12),
                       FilledButton(onPressed: _reload, child: const Text('Reintentar')),
                     ]),
