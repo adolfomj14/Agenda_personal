@@ -9,7 +9,7 @@ class Api {
   final String baseUrl;
   final String key;
 
-  static const String appVersion = 'v0.2.1';
+  static const String appVersion = 'v0.2.2';
   static final http.Client _client = createResilientHttpClient();
   static final Map<String, dynamic> _memCache = {};
 
