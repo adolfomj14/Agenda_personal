@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../api.dart';
 import '../theme.dart';
+import 'stats_sheet.dart';
 
 class TasksScreen extends StatefulWidget {
   const TasksScreen({super.key, required this.api});
@@ -15,6 +16,7 @@ class _TasksScreenState extends State<TasksScreen> {
   List<Map<String, dynamic>> _tasks = [];
   Map<int, Map<String, dynamic>> _statuses = {};
   bool _loading = true;
+  bool _syncing = false;
   String? _error;
 
   // Filtros: 'all' | 'pending' | 'done'
@@ -22,15 +24,27 @@ class _TasksScreenState extends State<TasksScreen> {
   // Contexto: 'all' | 'universidad' | 'trabajo' | 'personal'
   String _ctxFilter = 'all';
 
-  // Cronómetro en vivo (actualización por segundo)
-  int? _timerTaskId;
-  DateTime? _timerStart;
   Timer? _tick;
+
+  int? get _timerTaskId => Api.activeTimer.value?.taskId;
+  DateTime? get _timerStart => Api.activeTimer.value?.start;
 
   @override
   void initState() {
     super.initState();
     _initLoad();
+    _syncTick();
+    Api.activeTimer.addListener(_syncTick);
+  }
+
+  void _syncTick() {
+    _tick?.cancel();
+    if (Api.activeTimer.value != null) {
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    }
+    if (mounted) setState(() {});
   }
 
   void _initLoad() {
@@ -54,10 +68,13 @@ class _TasksScreenState extends State<TasksScreen> {
   }
 
   Future<void> _refresh({bool silent = false, bool forceIcs = false}) async {
-    if (!silent && mounted) {
+    if (mounted) {
       setState(() {
-        _loading = true;
-        _error = null;
+        _syncing = true;
+        if (!silent) {
+          _loading = true;
+          _error = null;
+        }
       });
     }
     try {
@@ -66,12 +83,14 @@ class _TasksScreenState extends State<TasksScreen> {
       setState(() {
         _applyBundle(bundle);
         _loading = false;
+        _syncing = false;
         _error = null;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
+        _syncing = false;
         if (_tasks.isEmpty) _error = '$e';
       });
     }
@@ -79,6 +98,7 @@ class _TasksScreenState extends State<TasksScreen> {
 
   @override
   void dispose() {
+    Api.activeTimer.removeListener(_syncTick);
     _tick?.cancel();
     super.dispose();
   }
@@ -109,38 +129,32 @@ class _TasksScreenState extends State<TasksScreen> {
   Future<void> _toggleTimer(int id) async {
     if (_timerTaskId == id) {
       final mins = (_elapsedSeconds / 60).ceil().clamp(1, 1440);
-      _tick?.cancel();
-      setState(() {
-        _timerTaskId = null;
-        _timerStart = null;
-      });
+      await Api.clearGlobalTimer();
       await _logMinutes(id, mins);
     } else {
-      _tick?.cancel();
-      setState(() {
-        _timerTaskId = id;
-        _timerStart = DateTime.now();
-      });
-      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
+      final t = _tasks.cast<Map<String, dynamic>?>().firstWhere(
+            (x) => (x?['id'] as num?)?.toInt() == id,
+            orElse: () => null,
+          );
+      await Api.startGlobalTimer(id, t?['title']?.toString() ?? 'Tarea #$id');
     }
   }
 
-  void _cancelTimer() {
-    _tick?.cancel();
-    setState(() {
-      _timerTaskId = null;
-      _timerStart = null;
-    });
+  Future<void> _cancelTimer() async {
+    await Api.clearGlobalTimer();
   }
 
   Future<void> _logMinutes(int id, int mins) async {
-    // Actualización optimista inmediata
+    // Actualización optimista inmediata en UI y en caché en disco
     final idx = _tasks.indexWhere((t) => (t['id'] as num).toInt() == id);
     if (idx != -1) {
+      final newLogged = ((_tasks[idx]['logged_min'] as num?)?.toInt() ?? 0) + mins;
       setState(() {
-        _tasks[idx]['logged_min'] = ((_tasks[idx]['logged_min'] as num?)?.toInt() ?? 0) + mins;
+        _tasks[idx]['logged_min'] = newLogged;
+      });
+      widget.api.mutateCachedTasks((list) {
+        final i = list.indexWhere((t) => (t['id'] as num).toInt() == id);
+        if (i != -1) list[i]['logged_min'] = newLogged;
       });
     }
     try {
@@ -161,12 +175,16 @@ class _TasksScreenState extends State<TasksScreen> {
 
   Future<void> _toggleDone(Map<String, dynamic> task, bool newDone) async {
     final id = (task['id'] as num).toInt();
-    // Actualización optimista inmediata: la tarea NO desaparece, se marca visualmente
+    // Actualización optimista inmediata: la tarea NO desaparece, se marca visualmente y se guarda en caché local
     setState(() {
       task['done'] = newDone;
       if (newDone) {
         _statuses[id] = {'task_id': id, 'status': 'done', 'remaining_min': 0, 'unscheduled_min': 0};
       }
+    });
+    widget.api.mutateCachedTasks((list) {
+      final i = list.indexWhere((t) => (t['id'] as num).toInt() == id);
+      if (i != -1) list[i]['done'] = newDone;
     });
     try {
       await widget.api.patch('/tasks/$id', {'done': newDone});
@@ -440,6 +458,11 @@ class _TasksScreenState extends State<TasksScreen> {
         ),
         actions: [
           IconButton(
+            tooltip: 'Estadísticas y productividad',
+            icon: const Icon(Icons.bar_chart_rounded),
+            onPressed: () => showStatsModal(context, widget.api),
+          ),
+          IconButton(
             tooltip: 'Importar entregas de Canvas (Universidad)',
             icon: const Icon(Icons.cloud_download_outlined),
             onPressed: () async {
@@ -472,6 +495,12 @@ class _TasksScreenState extends State<TasksScreen> {
             onPressed: () => _refresh(forceIcs: true),
           ),
         ],
+        bottom: _syncing && _tasks.isNotEmpty
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(2),
+                child: LinearProgressIndicator(minHeight: 2),
+              )
+            : null,
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openTaskEditor(),

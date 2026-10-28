@@ -114,22 +114,35 @@ class _NoteEditorState extends State<NoteEditor> {
     super.dispose();
   }
 
+  void _applyNoteMap(Map n) {
+    _title.text = n['title'] ?? '';
+    _color = n['color'] ?? _color;
+    _tags = n['tags'] ?? '';
+    _pinned = (n['pinned'] ?? 0) == 1;
+    _els = NoteElement.decodeList(n['canvas']?.toString());
+    if (_els.isEmpty && (n['body'] ?? '').toString().isNotEmpty) {
+      _els = [
+        NoteElement(id: NoteElement.newId(), type: 'text', w: 340, h: 220, data: {'text': n['body'], 'size': 16.0})
+      ];
+    }
+  }
+
   Future<void> _load() async {
     if (_id != null) {
+      final cached = widget.api.peekCache('/notes/$_id');
+      if (cached is Map) {
+        _applyNoteMap(cached);
+        if (mounted) setState(() => _loading = false);
+      }
       try {
         final n = await widget.api.get('/notes/$_id') as Map;
-        _title.text = n['title'] ?? '';
-        _color = n['color'] ?? _color;
-        _tags = n['tags'] ?? '';
-        _pinned = (n['pinned'] ?? 0) == 1;
-        _els = NoteElement.decodeList(n['canvas']?.toString());
-        if (_els.isEmpty && (n['body'] ?? '').toString().isNotEmpty) {
-          _els = [
-            NoteElement(id: NoteElement.newId(), type: 'text', w: 340, h: 220, data: {'text': n['body'], 'size': 16.0})
-          ];
+        if (!_dirty) {
+          _applyNoteMap(n);
         }
       } catch (e) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No se pudo abrir: $e')));
+        if (cached == null && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No se pudo abrir: $e')));
+        }
       }
     }
     if (mounted) setState(() => _loading = false);
@@ -527,6 +540,11 @@ class _NoteEditorState extends State<NoteEditor> {
             onChanged: (_) => _touch(),
           ),
           actions: [
+            IconButton(
+              tooltip: 'Centrar lienzo (100%)',
+              icon: const Icon(Icons.center_focus_strong_outlined),
+              onPressed: () => setState(() => _tc.value = Matrix4.identity()),
+            ),
             IconButton(
               tooltip: _pinned ? 'Desfijar' : 'Fijar',
               icon: Icon(_pinned ? Icons.push_pin : Icons.push_pin_outlined),
@@ -1108,6 +1126,7 @@ class _NoteEditorState extends State<NoteEditor> {
           ),
         );
       }
+      actions.add(_mini(Icons.copy_outlined, 'Duplicar elemento', () => _duplicateElement(e), fg));
       actions.add(_mini(Icons.delete_outline, 'Eliminar', () => _confirmDelete(e), Colors.redAccent));
     }
     return GestureDetector(
@@ -1147,6 +1166,26 @@ class _NoteEditorState extends State<NoteEditor> {
         e.data['size'] = (((e.data['size'] as num?)?.toDouble() ?? 16.0) + d).clamp(10, 72).toDouble();
         _touch();
       });
+
+  void _duplicateElement(NoteElement e) {
+    final clonedData = jsonDecode(jsonEncode(e.data)) as Map<String, dynamic>;
+    final copy = NoteElement(
+      id: NoteElement.newId(),
+      type: e.type,
+      x: (e.x + 24).clamp(8, 2850).toDouble(),
+      y: (e.y + 24).clamp(8, 2850).toDouble(),
+      w: e.w,
+      h: e.h,
+      data: clonedData,
+    );
+    setState(() {
+      _els.add(copy);
+      _selected = copy.id;
+      _editing = null;
+      _drawing = copy.type == 'draw' ? copy.id : null;
+      _touch();
+    });
+  }
 
   void _confirmDelete(NoteElement e) => setState(() {
         _els.remove(e);

@@ -1,6 +1,7 @@
 """Lectura de calendarios ICS (Canvas, Google Calendar vía enlace secreto/público)."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -10,6 +11,10 @@ import icalendar
 import recurring_ical_events
 
 _http = httpx.Client(timeout=18, follow_redirects=True)
+
+# Caché en memoria de eventos ya parseados: evita re-ejecutar Calendar.from_ical y recurring_ical_events
+# en cada petición cuando el contenido .ics y el rango de días no han cambiado.
+_parsed_cache: dict[tuple[str, str, str, str, str], list[CalEvent]] = {}
 
 
 @dataclass
@@ -38,7 +43,22 @@ def _to_dt(value, tz: ZoneInfo) -> tuple[datetime, bool]:
 
 
 def parse_ics(data: bytes | str, source: str, start: datetime, end: datetime, tz: ZoneInfo) -> list[CalEvent]:
-    cal = icalendar.Calendar.from_ical(data)
+    raw_bytes = data.encode("utf-8", errors="ignore") if isinstance(data, str) else data
+    if not raw_bytes.strip():
+        return []
+    digest = hashlib.sha1(raw_bytes).hexdigest()
+    cache_key = (
+        digest,
+        source,
+        start.astimezone(tz).date().isoformat(),
+        end.astimezone(tz).date().isoformat(),
+        str(tz),
+    )
+    cached = _parsed_cache.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
+    cal = icalendar.Calendar.from_ical(raw_bytes)
     events: list[CalEvent] = []
     for comp in recurring_ical_events.of(cal).between(start, end):
         dt_start, all_day = _to_dt(comp.get("DTSTART").dt, tz)
@@ -63,7 +83,10 @@ def parse_ics(data: bytes | str, source: str, start: datetime, end: datetime, tz
             )
         )
     events.sort(key=lambda e: e.start)
-    return events
+    if len(_parsed_cache) > 64:
+        _parsed_cache.clear()
+    _parsed_cache[cache_key] = events
+    return list(events)
 
 
 def fetch_ics(url: str) -> bytes:

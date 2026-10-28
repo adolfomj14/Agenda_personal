@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api.dart';
 import '../theme.dart';
+import 'stats_sheet.dart';
 import 'weekly_schedule_sheet.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -34,14 +35,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
         appBar: AppBar(title: const Text('Ajustes')),
         body: SelectionArea(
           child: ListView(padding: const EdgeInsets.all(16), children: [
-            const Row(children: [
-              AppLogo(size: 56),
-              SizedBox(width: 14),
-              Expanded(
+            Row(children: [
+              const AppLogo(size: 56),
+              const SizedBox(width: 14),
+              const Expanded(
                 child: Text(
                   'Agenda personal (${Api.appVersion})\nUniversidad + Trabajo en un solo lugar',
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                 ),
+              ),
+              IconButton.filledTonal(
+                tooltip: 'Estadísticas de productividad',
+                icon: const Icon(Icons.bar_chart_rounded),
+                onPressed: () => showStatsModal(context, widget.api),
               ),
             ]),
             const SizedBox(height: 20),

@@ -129,3 +129,8 @@ def test_weekly_blocks_and_completed_tasks_remain_visible(tmp_path, monkeypatch)
     assert any(e["calendar"] == "Horario semanal" for e in bundle["events"])
     assert any(x["id"] == tid for x in bundle["tasks"])
 
+    # Verificar endpoint /ping y columnas cached_ics en tabla calendars
+    ping = c.get("/ping").json()
+    assert ping["ok"] is True
+
+

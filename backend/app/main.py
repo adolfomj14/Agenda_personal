@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from . import db
@@ -28,6 +29,8 @@ def auth(request: Request, x_api_key: str | None = Header(default=None)) -> None
 
 
 app = FastAPI(title="Agenda personal", dependencies=[Depends(auth)])
+# Compresión GZip para acelerar respuestas grandes (/bundle y /notes) en redes móviles.
+app.add_middleware(GZipMiddleware, minimum_size=500)
 # La PWA se sirve desde otro dominio (GitHub Pages); la seguridad es la cabecera X-API-Key.
 app.add_middleware(
     CORSMiddleware,
@@ -135,9 +138,19 @@ def health():
 
 @app.get("/ping")
 def ping():
-    """Consulta la base de datos (mantiene activo el proyecto de Supabase)."""
+    """Consulta la base de datos y precalienta la caché de calendarios en segundo plano."""
     with db.connect() as conn:
         conn.execute("SELECT 1 AS ok").fetchone()
+        cals = [dict(r) for r in conn.execute("SELECT id, name, context, url, cached_ics, cached_at FROM calendars")]
+    for c in cals:
+        url = c["url"]
+        if url not in _cache and c.get("cached_ics"):
+            _cache[url] = (float(c.get("cached_at") or 0), c["cached_ics"].encode("utf-8"))
+        hit = _cache.get(url)
+        if not hit or (_time.time() - hit[0]) >= CACHE_TTL:
+            if url not in _refreshing:
+                _refreshing.add(url)
+                threading.Thread(target=_refresh_bg, args=(url, c["id"]), daemon=True).start()
     return {"ok": True, "db": True}
 
 
@@ -147,13 +160,18 @@ def add_calendar(c: CalendarIn):
     _check_ctx(c.context)
     with db.connect() as conn:
         cur = conn.execute("INSERT INTO calendars(name,context,url) VALUES(?,?,?)", (c.name, c.context, c.url))
-        return {"id": cur.lastrowid, **c.model_dump()}
+        cid = cur.lastrowid
+    # Pre-cargar en segundo plano el calendario recién añadido
+    if c.url not in _refreshing:
+        _refreshing.add(c.url)
+        threading.Thread(target=_refresh_bg, args=(c.url, cid), daemon=True).start()
+    return {"id": cid, **c.model_dump()}
 
 
 @app.get("/calendars")
 def list_calendars():
     with db.connect() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM calendars")]
+        return [dict(r) for r in conn.execute("SELECT id, name, context, url FROM calendars")]
 
 
 @app.delete("/calendars/{cid}", status_code=204)
@@ -220,26 +238,51 @@ def delete_weekly_block(bid: int):
         conn.execute("DELETE FROM weekly_blocks WHERE id=?", (bid,))
 
 
-# ---------- caché de ICS con recarga en segundo plano ----------
+# ---------- caché de ICS en RAM + Base de Datos con recarga en segundo plano ----------
 _cache: dict[str, tuple[float, bytes]] = {}
 _refreshing: set[str] = set()
 CACHE_TTL = 900        # 15 min fresco
-STALE_TTL = 86400      # hasta 24 h se sirve al instante mientras se actualiza en segundo plano
+STALE_TTL = 604800     # hasta 7 días se sirve al instante mientras se actualiza en segundo plano
 
 
-def _refresh_bg(url: str) -> None:
+def _save_ics_to_db(cal_id: int | None, url: str, data: bytes, ts: float) -> None:
+    try:
+        text = data.decode("utf-8", errors="ignore")
+        with db.connect() as conn:
+            if cal_id is not None:
+                conn.execute("UPDATE calendars SET cached_ics=?, cached_at=? WHERE id=?", (text, ts, cal_id))
+            else:
+                conn.execute("UPDATE calendars SET cached_ics=?, cached_at=? WHERE url=?", (text, ts, url))
+    except Exception:
+        pass
+
+
+def _refresh_bg(url: str, cal_id: int | None = None) -> None:
     try:
         data = fetch_ics(url)
-        _cache[url] = (_time.time(), data)
+        now_ts = _time.time()
+        _cache[url] = (now_ts, data)
+        _save_ics_to_db(cal_id, url, data, now_ts)
     except Exception:
         pass
     finally:
         _refreshing.discard(url)
 
 
-def _ics_bytes(url: str, force: bool = False) -> bytes:
+def _ics_bytes(
+    url: str,
+    force: bool = False,
+    cal_id: int | None = None,
+    db_cached_ics: str | None = None,
+    db_cached_at: float | None = None,
+) -> bytes:
     now_ts = _time.time()
     hit = _cache.get(url)
+    # Si la RAM está vacía tras un reinicio de Render, restaurar al instante desde la base de datos
+    if hit is None and db_cached_ics:
+        hit = (float(db_cached_at or 0), db_cached_ics.encode("utf-8"))
+        _cache[url] = hit
+
     if not force and hit:
         age = now_ts - hit[0]
         if age < CACHE_TTL:
@@ -247,7 +290,7 @@ def _ics_bytes(url: str, force: bool = False) -> bytes:
         if age < STALE_TTL:
             if url not in _refreshing:
                 _refreshing.add(url)
-                threading.Thread(target=_refresh_bg, args=(url,), daemon=True).start()
+                threading.Thread(target=_refresh_bg, args=(url, cal_id), daemon=True).start()
             return hit[1]
     try:
         data = fetch_ics(url)
@@ -256,6 +299,7 @@ def _ics_bytes(url: str, force: bool = False) -> bytes:
             return hit[1]
         raise HTTPException(502, f"No se pudo leer el calendario: {e}")
     _cache[url] = (now_ts, data)
+    threading.Thread(target=_save_ics_to_db, args=(cal_id, url, data, now_ts), daemon=True).start()
     return data
 
 
@@ -308,13 +352,19 @@ def _load_events(
     if cals is None or wbs is None:
         with db.connect() as conn:
             if cals is None:
-                cals = [dict(r) for r in conn.execute("SELECT * FROM calendars")]
+                cals = [dict(r) for r in conn.execute("SELECT id, name, context, url, cached_ics, cached_at FROM calendars")]
             if wbs is None:
                 wbs = [_wb_row(r) for r in conn.execute("SELECT * FROM weekly_blocks WHERE active=1")]
     out: list[tuple[CalEvent, str]] = []
 
     def _load_one(c: dict) -> list[tuple[CalEvent, str]]:
-        raw = _ics_bytes(c["url"], force=force_refresh)
+        raw = _ics_bytes(
+            c["url"],
+            force=force_refresh,
+            cal_id=c.get("id"),
+            db_cached_ics=c.get("cached_ics"),
+            db_cached_at=c.get("cached_at"),
+        )
         return [(ev, c["context"]) for ev in parse_ics(raw, c["name"], start, end, TZ)]
 
     if len(cals) > 1:
@@ -463,10 +513,17 @@ def import_tasks(cid: int, days: int = 60):
         cal = conn.execute("SELECT * FROM calendars WHERE id=?", (cid,)).fetchone()
         if not cal:
             raise HTTPException(404, "Calendario no existe")
+        cal_d = dict(cal)
         now = datetime.now(TZ)
         created = 0
         updated = 0
-        for ev in parse_ics(_ics_bytes(cal["url"]), cal["name"], now - timedelta(days=7), now + timedelta(days=days), TZ):
+        raw = _ics_bytes(
+            cal_d["url"],
+            cal_id=cal_d["id"],
+            db_cached_ics=cal_d.get("cached_ics"),
+            db_cached_at=cal_d.get("cached_at"),
+        )
+        for ev in parse_ics(raw, cal_d["name"], now - timedelta(days=7), now + timedelta(days=days), TZ):
             if not ev.all_day and ev.end > ev.start:
                 continue  # es una clase/reunión con duración, no una entrega puntual
             desc_parts = [p for p in (ev.description, f"Enlace: {ev.url}" if ev.url else "") if p]
@@ -475,7 +532,7 @@ def import_tasks(cid: int, days: int = 60):
             cur = conn.execute(
                 "INSERT OR IGNORE INTO tasks(title,context,estimate_min,deadline,priority,description,source_uid) "
                 "VALUES(?,?,?,?,?,?,?)",
-                (ev.title, cal["context"], 90, ev.start.isoformat(), 2, desc, uid_key),
+                (ev.title, cal_d["context"], 90, ev.start.isoformat(), 2, desc, uid_key),
             )
             if cur.rowcount > 0:
                 created += cur.rowcount
@@ -545,7 +602,7 @@ def get_plan(days: int = 14):
                 "FROM tasks t"
             ).fetchall()
         ]
-        cals = [dict(r) for r in conn.execute("SELECT * FROM calendars")]
+        cals = [dict(r) for r in conn.execute("SELECT id, name, context, url, cached_ics, cached_at FROM calendars")]
         wbs = [_wb_row(r) for r in conn.execute("SELECT * FROM weekly_blocks WHERE active=1")]
     evs = _load_events(now, now + timedelta(days=days), cals=cals, wbs=wbs)
     return _compute_plan(rows, evs, now)
@@ -556,7 +613,7 @@ def get_bundle(days: int = 90, back: int = 30, plan_days: int = 21, refresh: boo
     """Devuelve en una sola petición rápida: eventos, horario semanal, tareas, plan y conflictos."""
     now = datetime.now(TZ)
     with db.connect() as conn:
-        cals = [dict(r) for r in conn.execute("SELECT * FROM calendars")]
+        cals = [dict(r) for r in conn.execute("SELECT id, name, context, url, cached_ics, cached_at FROM calendars")]
         wbs = [_wb_row(r) for r in conn.execute("SELECT * FROM weekly_blocks ORDER BY start_time, id")]
         task_rows = [
             _task_row(r)

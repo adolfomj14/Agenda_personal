@@ -58,6 +58,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   List<dynamic> _conflicts = [];
   int _atRisk = 0;
   bool _loading = true;
+  bool _syncing = false;
   String? _error;
   DateTime _focused = DateTime.now();
   DateTime _selected = _day(DateTime.now());
@@ -148,10 +149,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   Future<void> _reload({bool silent = false, bool forceIcs = false}) async {
-    if (!silent && mounted) {
+    if (mounted) {
       setState(() {
-        _loading = true;
-        _error = null;
+        _syncing = true;
+        if (!silent) {
+          _loading = true;
+          _error = null;
+        }
       });
     }
     try {
@@ -160,12 +164,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
       setState(() {
         _applyBundle(bundle);
         _loading = false;
+        _syncing = false;
         _error = null;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
+        _syncing = false;
         if (_byDay.isEmpty) _error = '$e';
       });
     }
@@ -405,6 +411,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
             onPressed: () => _reload(forceIcs: true),
           ),
         ],
+        bottom: _syncing && _byDay.isNotEmpty
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(2),
+                child: LinearProgressIndicator(minHeight: 2),
+              )
+            : null,
       ),
       body: _loading && _byDay.isEmpty
           ? const Center(child: CircularProgressIndicator())

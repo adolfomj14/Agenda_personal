@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS calendars(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   context TEXT NOT NULL,         -- universidad | trabajo | personal
-  url TEXT NOT NULL
+  url TEXT NOT NULL,
+  cached_ics TEXT NOT NULL DEFAULT '',
+  cached_at REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS weekly_blocks(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +74,8 @@ PG_MIGRATIONS = [
       active integer not null default 1
     )""",
     "ALTER TABLE public.weekly_blocks ENABLE ROW LEVEL SECURITY",
+    "ALTER TABLE public.calendars ADD COLUMN IF NOT EXISTS cached_ics text not null default ''",
+    "ALTER TABLE public.calendars ADD COLUMN IF NOT EXISTS cached_at double precision not null default 0",
     "ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS description text not null default ''",
     "ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS completed_at text",
     "ALTER TABLE public.notes ADD COLUMN IF NOT EXISTS canvas text not null default '[]'",
@@ -178,6 +182,11 @@ def init() -> None:
         return
     with connect() as c:
         c.executescript(SCHEMA)
+        cols_cals = {r["name"] for r in c.execute("PRAGMA table_info(calendars)")}
+        for name, ddl in (("cached_ics", "TEXT NOT NULL DEFAULT ''"),
+                          ("cached_at", "REAL NOT NULL DEFAULT 0")):
+            if name not in cols_cals:
+                c.execute(f"ALTER TABLE calendars ADD COLUMN {name} {ddl}")
         cols_notes = {r["name"] for r in c.execute("PRAGMA table_info(notes)")}
         for name, ddl in (("canvas", "TEXT NOT NULL DEFAULT '[]'"),
                           ("color", "TEXT NOT NULL DEFAULT '#FFF59D'"),

@@ -6,3 +6,6 @@ __pycache__/
 .flutter-plugins*
 build/
 *.err
+agenda_personal.exe
+*.dll
+data/
